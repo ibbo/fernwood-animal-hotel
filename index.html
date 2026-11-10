@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fernwood Animal Hotel</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌿</text></svg>">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <div id="labels"></div>
+
+  <div id="hud" hidden>
+    <div id="top">
+      <div class="pill" id="clock"><span id="weather">☀️</span><span><b id="day">Day 1</b> <span id="time">7:00</span></span></div>
+      <div class="pill" id="stars" title="Stars"></div>
+      <div class="pill" id="leaves" title="Leaves pay for everything you build">🍃 <b>0</b></div>
+      <div class="pill" id="bag" title="Snacks in your bag"></div>
+      <span class="grow"></span>
+      <button class="round" id="btn-sound" title="Sound">🔊</button>
+      <button class="round" id="btn-menu" title="Menu">☰</button>
+    </div>
+    <div id="modehint" hidden></div>
+    <div id="goals" class="card"></div>
+    <div id="toasts"></div>
+    <div id="sel" class="card" hidden></div>
+    <div id="tray" class="card" hidden></div>
+    <div id="toolbar">
+      <button id="btn-build"><span>🔨</span>Build<kbd>B</kbd></button>
+      <button id="btn-friends"><span>📖</span>Friends<kbd>F</kbd></button>
+      <button id="btn-home" title="Look at your keeper"><span>🧭</span>Find me<kbd>Space</kbd></button>
+    </div>
+  </div>
+
+  <div id="banner" hidden><div class="icon"></div><h2></h2><p></p></div>
+  <div id="modal" hidden><div class="sheet card"></div></div>
+
+  <div id="title">
+    <div class="logo">
+      <div class="leaf">🌿</div>
+      <h1>Fernwood</h1>
+      <h3>Animal Hotel</h3>
+      <p>Welcome guests off the ferry, make each one a cosy home,<br>and befriend the wild animals hiding on the island.</p>
+      <div class="row"><input id="name" maxlength="14" placeholder="Your name" autocomplete="off"></div>
+      <div class="row">
+        <button class="big" id="btn-continue" hidden>Continue</button>
+        <button class="big alt" id="btn-new">Start a new hotel</button>
+      </div>
+    </div>
+  </div>
+  <div id="fail" hidden></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
