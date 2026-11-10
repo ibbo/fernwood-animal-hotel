@@ -1,7 +1,7 @@
 // Everything drawn over the world: the top bar, goals, build tray, cards,
 // bubbles above animals, pop-up messages and the books and menus.
 
-import { BUILD, BUILD_CATS, SPECIES, WILD, ITEMS, ASPECTS, REGIONS, FULL, NPCS, LOCALS } from './data.js';
+import { BUILD, BUILD_CATS, SPECIES, WILD, ITEMS, ASPECTS, REGIONS, FULL, NPCS, LOCALS, LOOK, LOOK_NAMES } from './data.js';
 import { WISH_TEXT, WISH_ICON } from './game.js';
 
 const $ = (id) => document.getElementById(id);
@@ -30,6 +30,8 @@ export class UI {
     $('btn-build').onclick = () => { this.click(); this.toggleTray(); };
     $('btn-friends').onclick = () => { this.click(); this.openFriends(); };
     $('btn-home').onclick = () => { this.click(); view.follow = true; };
+    $('btn-view').onclick = () => { this.click(); this.onView(); };
+    $('friends').onclick = () => { this.click(); this.openShare(); };
     $('btn-menu').onclick = () => { this.click(); this.openMenu(); };
     $('btn-sound').onclick = () => { sound.wake(); sound.setOn(!sound.on); $('btn-sound').textContent = sound.on ? '🔊' : '🔇'; };
     $('btn-sound').textContent = sound.on ? '🔊' : '🔇';
@@ -81,6 +83,10 @@ export class UI {
     lv.querySelector('b').textContent = s.leaves;
     if (s.leaves !== this.lastLeaves) { lv.classList.remove('bump'); void lv.offsetWidth; lv.classList.add('bump'); this.lastLeaves = s.leaves; }
     $('bag').innerHTML = Object.keys(ITEMS).filter((k) => s.inv[k] > 0).map((k) => `<span title="${ITEMS[k].name}">${ITEMS[k].icon}${s.inv[k]}</span>`).join(' ') + (s.parcel ? '<span title="A parcel to deliver">📦</span>' : '');
+
+    const fr = $('friends');
+    fr.hidden = !g.online;
+    if (g.online) fr.innerHTML = `👭 ${g.players.length} · <b>${g.code}</b>${g.status === 'lost' ? ' 📡' : ''}`;
 
     const gl = g.goals(), box = $('goals');
     if (!gl) box.innerHTML = '<h4><span>⭐ 5</span> Five-star sanctuary</h4><div class="reward">You did it! Fernwood is famous. Keep welcoming guests for as long as you like. There are fireworks every evening.</div>';
@@ -215,39 +221,45 @@ export class UI {
         this.click();
         const act = bt.dataset.act;
         if (act === 'remove') g.remove(sel.ref);
-        else if (act === 'harvest') g.goTo(g.tileOf(sel.ref), () => g.tend(sel.ref));
-        else if (act === 'fish') g.goTo(g.tileOf(sel.ref), () => g.cast());
+        else if (act === 'harvest') g.tendAt(sel.ref);
+        else if (act === 'fish') g.castAt(sel.ref);
         else if (act === 'assign') g.clickActor(g.guestActors.get(sel.ref.id));
       };
     });
   }
 
   // ---------------------------------------------------------------- pop-up sheets
-  sheet(kind, html) {
+  // `redraw` draws the sheet again when the shared hotel changes under it.
+  sheet(kind, html, redraw = null, sig = null) {
     this.modalKind = kind;
+    this.redraw = redraw; this.sigOf = sig; this.redrawSig = sig ? sig() : '';
+    if (document.pointerLockElement) document.exitPointerLock();
     const m = $('modal'), sh = m.querySelector('.sheet');
     sh.innerHTML = '<button class="x">✕</button>' + html;
     sh.querySelector('.x').onclick = () => this.closeModal();
     m.hidden = false;
     return sh;
   }
-  closeModal() { $('modal').hidden = true; this.modalKind = null; }
+  closeModal() { $('modal').hidden = true; this.modalKind = null; this.redraw = null; }
+  // The shared hotel changed: bring an open shop or board up to date.
+  stateChanged() {
+    if (this.modalOpen && this.redraw && this.sigOf() !== this.redrawSig) this.redraw();
+  }
+  bagSig = () => { const s = this.game.state; return JSON.stringify([s.inv, s.leaves, s.jobs, s.parcel, s.wild, s.rep, s.stars]); };
   get modalOpen() { return !$('modal').hidden; }
 
   openWild(id) {
     const g = this.game, d = WILD[id];
     const draw = () => {
+      if (g.state.wild[id]?.rescued || !g.wildActors.has(id)) { this.closeModal(); return; }
       const needs = g.wildNeeds(id), can = needs.some((n) => n.have > 0 && n.given < n.n);
       const sh = this.sheet('wild', `<div class="wildhead"><img class="face" src="${this.face(d.species)}"><div><h2>${d.name}</h2><p>${d.story}</p></div></div>
         <h5>${d.name} would love</h5>
         <div class="needs">${needs.map((n) => `<span class="${n.given >= n.n ? 'ok' : ''}">${ITEMS[n.item].icon} ${n.given}/${n.n} <small>${n.given >= n.n ? '✓' : 'you have ' + n.have}</small></span>`).join('')}</div>
         ${can ? '' : `<p style="color:var(--soft)">You don't have what ${d.name} wants yet. ${needs.filter((n) => n.given < n.n).map((n) => `Get ${ITEMS[n.item].name} from ${ITEMS[n.item].from}.`).join(' ')}</p>`}
-        <div class="acts"><button class="btn" id="give" ${can ? '' : 'disabled'}>Give snacks</button><button class="btn ghost" id="later">Come back later</button></div>`);
+        <div class="acts"><button class="btn" id="give" ${can ? '' : 'disabled'}>Give snacks</button><button class="btn ghost" id="later">Come back later</button></div>`, draw, this.bagSig);
       sh.querySelector('#later').onclick = () => this.closeModal();
-      sh.querySelector('#give').onclick = () => {
-        g.giveWild(id);
-        if (g.state.wild[id]?.rescued) this.closeModal(); else draw();
-      };
+      sh.querySelector('#give').onclick = () => { g.giveWild(id); draw(); };
     };
     draw();
   }
@@ -259,10 +271,10 @@ export class UI {
     if (id === 'market') {
       const draw = () => {
         const have = Object.keys(ITEMS).filter((k) => s.inv[k] > 0);
-        const sh = this.sheet('shop', head(`“Morning, ${esc(s.name)}! I buy anything you grow, catch or find.” You have <b>🍃 ${s.leaves}</b>.`)
+        const sh = this.sheet('shop', head(`“Morning, ${esc(g.me.name)}! I buy anything you grow, catch or find.” You have <b>🍃 ${s.leaves}</b>.`)
           + '<h5>Sell from your bag</h5>' + (have.length ? `<div class="shop">${have.map((k) => `<div class="row"><span class="ic">${ITEMS[k].icon}</span><span><b>${ITEMS[k].name}</b> ×${s.inv[k]}</span><button class="btn ghost" data-sell="${k}" data-n="1">Sell 1 · 🍃${ITEMS[k].sell}</button><button class="btn" data-sell="${k}" data-n="${s.inv[k]}">Sell all · 🍃${ITEMS[k].sell * s.inv[k]}</button></div>`).join('')}</div>` : '<p style="color:var(--soft)">Your bag is empty. Pick up shells on the beach, catch fish off the pier, or grow snacks.</p>')
           + `<h5>Buy</h5><div class="shop">${g.stock().map((k) => `<div class="row"><span class="ic">${ITEMS[k].icon}</span><span><b>${ITEMS[k].name}</b>${ITEMS[k].note ? `<br><small>${ITEMS[k].note}</small>` : ''}</span><button class="btn ghost" data-buy="${k}" ${s.leaves < g.buyPrice(k) ? 'disabled' : ''}>Buy 1 · 🍃${g.buyPrice(k)}</button></div>`).join('')}</div>`
-          + '<div class="acts"><button class="btn ghost" id="bye">Goodbye</button></div>');
+          + '<div class="acts"><button class="btn ghost" id="bye">Goodbye</button></div>', draw, this.bagSig);
         sh.querySelectorAll('[data-sell]').forEach((b) => { b.onclick = () => { g.sell(b.dataset.sell, Number(b.dataset.n)); draw(); }; });
         sh.querySelectorAll('[data-buy]').forEach((b) => { b.onclick = () => { g.buy(b.dataset.buy); draw(); }; });
         sh.querySelector('#bye').onclick = () => this.closeModal();
@@ -274,7 +286,7 @@ export class UI {
         + `<div class="acts">${p ? '' : '<button class="btn" id="take">📦 Take a parcel</button>'}<button class="btn ghost" id="bye">Goodbye</button></div>`);
       sh.querySelector('#bye').onclick = () => this.closeModal();
       const take = sh.querySelector('#take');
-      if (take) take.onclick = () => { g.takeParcel(); const q = s.parcel; this.closeModal(); this.toast(`A parcel for <b>${esc(q.name)}</b>, ${q.where}. Look for the 📦 bubble.`, '📦', '', null, 7); };
+      if (take) take.onclick = () => { g.takeParcel(); this.closeModal(); };
     } else {
       const soon = s.rainFrom > s.clock, hrs = Math.round(s.rainFrom - s.clock);
       const weather = g.rain > 0.3 ? 'It is raining now. Good for the gardens, and little Lily loves it.' : soon && hrs < 30 ? `Rain is coming in about ${hrs} hour${hrs === 1 ? '' : 's'}.` : `Clear skies for now. I reckon rain in ${Math.max(1, s.nextRain)} day${s.nextRain > 1 ? 's' : ''} or so.`;
@@ -289,7 +301,7 @@ export class UI {
       const sh = this.sheet('board', `<h2>📋 Port Marlow notice board</h2><p>The townsfolk always need a hand. Bring what they ask for and they pay in leaves. You have helped the town <b>${s.rep}</b> time${s.rep === 1 ? '' : 's'}.</p>
         <div class="shop">${s.jobs.map((j, i) => { const l = LOCALS[j.who], first = Object.keys(j.needs)[0]; return `<div class="row"><img class="face small" src="${this.face(l.species)}"><span><b>${l.name}</b> ${ITEMS[first].why}.<br>Wants ${this.needs(j)}</span><button class="btn ghost" data-skip="${i}" title="Swap this job for another">↻</button><button class="btn" data-job="${i}" ${g.jobReady(j) ? '' : 'disabled'}>Hand over · 🍃${j.pay}</button></div>`; }).join('')}</div>
         ${this.nextGoods()}
-        <div class="acts"><button class="btn ghost" id="bye">Goodbye</button></div>`);
+        <div class="acts"><button class="btn ghost" id="bye">Goodbye</button></div>`, draw, this.bagSig);
       sh.querySelectorAll('[data-skip]').forEach((b) => { b.onclick = () => { g.skipJob(s.jobs[Number(b.dataset.skip)]); draw(); }; });
       sh.querySelectorAll('[data-job]').forEach((b) => { b.onclick = () => { g.handIn(s.jobs[Number(b.dataset.job)]); draw(); }; });
       sh.querySelector('#bye').onclick = () => this.closeModal();
@@ -304,8 +316,8 @@ export class UI {
   openLodge() {
     const g = this.game, h = g.hour, bed = h >= 19 || h < 5;
     const sh = this.sheet('lodge', `<h2>Fernwood Lodge</h2>
-      <p>This is your home, ${esc(g.state.name)}. The kettle is on and your bed is made.</p>
-      <p style="color:var(--soft)">${bed ? 'Sleep to skip the night. Some shy animals only come out after dark, though…' : 'It is too early for bed. Come back after 7 in the evening.'}</p>
+      <p>This is your home, ${esc(g.me.name)}. The kettle is on and your bed is made.</p>
+      <p style="color:var(--soft)">${bed ? (g.online && g.players.length > 1 ? 'The night flies by once every keeper is in bed. ' : 'Sleep to skip the night. ') + 'Some shy animals only come out after dark, though…' : 'It is too early for bed. Come back after 7 in the evening.'}</p>
       <div class="acts"><button class="btn" id="zz" ${bed ? '' : 'disabled'}>😴 Sleep until morning</button><button class="btn ghost" id="fr">📖 Friends book</button></div>`);
     sh.querySelector('#zz').onclick = () => { this.closeModal(); g.sleep(); };
     sh.querySelector('#fr').onclick = () => this.openFriends();
@@ -349,7 +361,9 @@ export class UI {
         <span>Click</span><span>Walk somewhere, or help an animal, water or pick a plant, pick something up, open a door</span>
         <span>W A S D</span><span>Walk around</span>
         <span>Drag</span><span>Slide the view. Right-drag or Q / E to turn it. Scroll to zoom.</span>
+        <span>V</span><span>See through your keeper's eyes. Click to look around with the mouse, Esc to let go of it. Scroll out to fly back up.</span>
         <span>B · F · Space</span><span>Build · Friends book · Find your keeper</span>
+        <span>H</span><span>Wave hello to your friends</span>
       </div>
       <h5>How it works</h5>
       <p>Every animal <b>loves two things</b> near its home, like 🌸 flowers or 💧 water. Anything within two tiles of a home counts, and next door counts double. Cosy homes and granted wishes mean more ❤️, and more 🍃 when guests go home.</p>
@@ -359,16 +373,79 @@ export class UI {
         <button class="btn" id="resume">Keep playing</button>
         <button class="btn ghost" id="music">🎵 Music: ${snd.musicOn ? 'on' : 'off'}</button>
         <button class="btn ghost" id="home">🏠 Take me to the lodge</button>
-        <button class="btn warn" id="reset">Start over</button>
+        <button class="btn ghost" id="look">🎨 Change my look</button>
+        ${g.online ? '<button class="btn ghost" id="share">👭 Invite friends</button><button class="btn warn" id="leave">Leave this hotel</button>' : '<button class="btn warn" id="reset">Start over</button>'}
       </div>`);
+    sh.querySelector('#look').onclick = () => this.openLook();
+    if (g.online) {
+      sh.querySelector('#share').onclick = () => this.openShare();
+      sh.querySelector('#leave').onclick = (e) => {
+        if (e.target.dataset.sure) { this.onLeave(); return; }
+        e.target.dataset.sure = 1;
+        e.target.textContent = 'Leave? Click again';
+      };
+    }
     sh.querySelector('#resume').onclick = () => this.closeModal();
     sh.querySelector('#music').onclick = (e) => { snd.wake(); snd.setMusic(!snd.musicOn); e.target.textContent = `🎵 Music: ${snd.musicOn ? 'on' : 'off'}`; };
     sh.querySelector('#home').onclick = () => { g.goHome(); this.view.follow = true; this.closeModal(); };
-    sh.querySelector('#reset').onclick = (e) => {
+    if (!g.online) sh.querySelector('#reset').onclick = (e) => {
       if (e.target.dataset.sure) { this.onReset(); return; }
       e.target.dataset.sure = 1;
       e.target.textContent = 'Really start over? Click again';
     };
+  }
+
+  // Choose how your keeper looks. Draws into `box` and calls `changed` with each new look.
+  lookPicker(box, look, changed) {
+    const draw = () => {
+      const row = (k) => {
+        const v = look[k], colour = k === 'skin' || k === 'hair';
+        return `<div class="opt"><button data-k="${k}" data-d="-1">‹</button><span>${colour ? `<i style="background:${LOOK[k][v]}"></i>${LOOK_NAMES[k]}` : LOOK_NAMES[v]}</span><button data-k="${k}" data-d="1">›</button></div>`;
+      };
+      box.innerHTML = `<div class="looks"><img src="${this.face('keeper', look)}" alt="">${['outfit', 'style', 'hair', 'hat', 'skin'].map(row).join('')}</div>`;
+      box.querySelectorAll('[data-k]').forEach((b) => {
+        b.onclick = () => {
+          this.click();
+          const k = b.dataset.k, list = LOOK[k], colour = k === 'skin' || k === 'hair';
+          const i = colour ? look[k] : list.indexOf(look[k]), n = (i + Number(b.dataset.d) + list.length) % list.length;
+          look[k] = colour ? n : list[n];
+          draw();
+          changed(look);
+        };
+      });
+    };
+    draw();
+  }
+  openLook() {
+    const g = this.game, look = { ...g.me.look };
+    const sh = this.sheet('look', '<h2>🎨 Your keeper</h2><div id="looksheet"></div><div class="acts"><button class="btn" id="done">Done</button></div>');
+    this.lookPicker(sh.querySelector('#looksheet'), look, (l) => this.onLook({ ...l }));
+    sh.querySelector('#done').onclick = () => this.closeModal();
+  }
+
+  // Who is here, and how to invite more friends.
+  openShare() {
+    const g = this.game;
+    if (!g.online) return;
+    const link = location.origin + location.pathname + '?w=' + g.code;
+    const draw = () => {
+      const sh = this.sheet('share', `<h2>👭 Play with friends</h2>
+        <p>Friends can join this hotel with the code:</p>
+        <div class="sharecode">${g.code}</div>
+        <p style="color:var(--soft)">They open Fernwood, choose <b>Play with friends</b> and type the code. Or send them this link:</p>
+        <div class="sharelink"><input readonly value="${link}"><button class="btn" id="copy">Copy link</button></div>
+        <h5>Keepers here now</h5>
+        <div class="people">${g.players.map((p) => `<div><img src="${this.face('keeper', p.look)}" alt="">${esc(p.name)}${p.pid === g.pid ? ' (you)' : ''}</div>`).join('')}</div>
+        <p style="color:var(--soft)">Everyone shares the same leaves, bag and animals. Press <b>H</b> to wave hello. The hotel waits safely when nobody is playing.</p>
+        <div class="acts"><button class="btn" id="bye">Keep playing</button></div>`, draw, () => JSON.stringify(g.players));
+      sh.querySelector('#bye').onclick = () => this.closeModal();
+      sh.querySelector('#copy').onclick = (e) => {
+        const done = () => { e.target.textContent = 'Copied!'; };
+        if (navigator.clipboard) navigator.clipboard.writeText(link).then(done, () => { sh.querySelector('input').select(); });
+        else sh.querySelector('input').select();
+      };
+    };
+    draw();
   }
 
   // ---------------------------------------------------------------- bubbles over the world

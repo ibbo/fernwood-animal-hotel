@@ -220,3 +220,31 @@ export function newState(name) {
     seen: {}, finale: false, tips: {}, finds: [], jobs: [], rep: 0, parcel: null, tourists: [], nextTourist: 0,
   };
 }
+
+// Bump this when the rules or the map change, so players and the shared
+// server never run different editions against each other.
+export const VERSION = 3;
+
+// What a keeper can look like. A look is { skin, hair, style, hat, outfit }.
+export const LOOK = {
+  skin: ['#f6c9a0', '#fbdcc0', '#e0a878', '#b9794e', '#7d4f33'],
+  hair: ['#7a4e2f', '#e9c46a', '#2b2320', '#b5532a', '#4a3024', '#f2a7c8'],
+  style: ['ponytail', 'bunches', 'short', 'long', 'curly'],
+  hat: ['none', 'straw', 'bow', 'cap'],
+  outfit: ['rainbow', 'dungarees', 'stripes', 'dress', 'jumper', 'explorer'],
+};
+export const LOOK_NAMES = {
+  skin: 'Skin', hair: 'Hair colour', style: 'Hair', hat: 'Hat', outfit: 'Clothes',
+  ponytail: 'Ponytail', bunches: 'Bunches', short: 'Short', long: 'Long', curly: 'Curly',
+  none: 'No hat', straw: 'Straw hat', bow: 'Bow', cap: 'Cap',
+  rainbow: 'Rainbow hoodie', dungarees: 'Dungarees', stripes: 'Stripy top', dress: 'Pink dress', jumper: 'Green jumper', explorer: 'Explorer',
+};
+// Brown hair tied back, a rainbow tie-dye hoodie and bright leggings.
+export const DEFAULT_LOOK = { skin: 0, hair: 0, style: 'ponytail', hat: 'none', outfit: 'rainbow' };
+export function cleanLook(l) {
+  const o = { ...DEFAULT_LOOK };
+  if (!l || typeof l !== 'object') return o;
+  for (const k of ['skin', 'hair']) if (Number.isInteger(l[k]) && l[k] >= 0 && l[k] < LOOK[k].length) o[k] = l[k];
+  for (const k of ['style', 'hat', 'outfit']) if (LOOK[k].includes(l[k])) o[k] = l[k];
+  return o;
+}

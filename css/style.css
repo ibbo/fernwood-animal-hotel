@@ -204,3 +204,40 @@ kbd { font: inherit; font-size: 11px; font-weight: 700; color: var(--soft); back
   #sel { bottom: 82px; }
   #toasts { bottom: 82px; width: 280px; }
 }
+
+/* ------------------------------------------------ friends, looks and first person */
+.lab.name > div { font-size: 13px; font-weight: 800; padding: 3px 9px; background: rgba(255, 253, 246, 0.92); border-color: #cfe8ff; animation: none; color: var(--ink); }
+.lab.name > div::after { display: none; }
+#friends { cursor: pointer; font-weight: 800; }
+#friends:hover { background: #fff; }
+#cross { position: fixed; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.95); box-shadow: 0 0 0 1.5px rgba(40, 30, 20, 0.55); pointer-events: none; z-index: 2; }
+.big.blue { background: var(--sky); box-shadow: 0 5px 0 #2877ab, 0 12px 24px rgba(0, 0, 0, 0.25); }
+.big.blue:active { box-shadow: 0 2px 0 #2877ab; }
+.logo .who { align-items: center; }
+#lookpic { position: relative; width: 74px; height: 74px; border-radius: 50%; background: rgba(255, 255, 255, 0.92); border: 3px solid #fff; padding: 0; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25); overflow: visible; }
+#lookpic img { width: 100%; height: 100%; object-fit: contain; border-radius: 50%; display: block; }
+#lookpic span { position: absolute; right: -6px; bottom: -6px; background: var(--gold); border: 2px solid #fff; border-radius: 50%; width: 28px; height: 28px; display: grid; place-items: center; font-size: 15px; text-shadow: none; }
+#lookpic:hover { filter: brightness(1.05); }
+#lookbox, #sharebox { margin: 12px auto 0; width: min(430px, 92vw); padding: 12px 14px; text-shadow: none; color: var(--ink); text-align: left; }
+#sharebox { display: grid; gap: 10px; }
+#sharebox .line { display: flex; gap: 8px; }
+#sharebox .line > * { flex: 1; }
+#sharebox .big { font-size: 16px; padding: 10px 12px; }
+#sharebox input { width: 110px; flex: 0 0 110px; letter-spacing: 4px; text-transform: uppercase; font-size: 20px; padding: 8px 6px; border-color: var(--line); }
+#sharebox small { color: var(--soft); font-weight: 600; }
+#titlemsg { min-height: 24px; margin-top: 10px; font-weight: 800; font-size: 16px; color: #ffe9a8; }
+.looks { display: grid; grid-template-columns: 96px 1fr; gap: 10px 14px; align-items: center; }
+.looks > img { width: 96px; height: 96px; object-fit: contain; background: #f1e4cb; border-radius: 18px; grid-row: span 5; align-self: start; }
+.looks .opt { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 14.5px; }
+.looks .opt button { width: 30px; height: 30px; border-radius: 50%; background: #f1e4cb; font-weight: 900; font-size: 15px; box-shadow: 0 2px 0 #d9c6a6; }
+.looks .opt button:active { translate: 0 2px; box-shadow: none; }
+.looks .opt span { flex: 1; text-align: center; }
+.looks .opt i { display: inline-block; width: 18px; height: 18px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); vertical-align: -4px; margin-right: 6px; }
+.sharecode { font-size: 44px; font-weight: 900; letter-spacing: 10px; text-align: center; color: var(--leaf-dark); margin: 6px 0 2px; user-select: text; }
+.sharelink { display: flex; gap: 8px; margin: 8px 0 4px; }
+.sharelink input { flex: 1; min-width: 0; border: 2px solid var(--line); border-radius: 12px; padding: 7px 10px; font-size: 13.5px; background: #fff; user-select: text; }
+.people { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.people div { text-align: center; font-weight: 800; font-size: 13.5px; }
+.people img { width: 64px; height: 64px; object-fit: contain; background: #f1e4cb; border-radius: 16px; display: block; margin-bottom: 3px; }
+#toolbar button.on kbd { background: rgba(255, 255, 255, 0.25); color: #fff; }
+#toolbar button { white-space: nowrap; }

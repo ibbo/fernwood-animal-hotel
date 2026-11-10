@@ -11,10 +11,11 @@ const SAVE_KEY = 'fernwood2.save';
 const WISH_ICON = { cuddle: '🤗', play: '🎾', wash: '🫧' };
 const WISH_TEXT = { cuddle: 'a cuddle', play: 'to play', wash: 'a bubble bath' };
 
-class Actor {
-  constructor(game, species, tile) {
+export class Actor {
+  constructor(game, species, tile, look) {
     this.game = game;
-    this.c = new Critter(species);
+    this.species = species;
+    this.c = new Critter(species, look);
     this.root = this.c.root;
     game.scene.add(this.root);
     this.path = []; this.then = null;
@@ -31,6 +32,15 @@ class Actor {
   act(anim, secs) { this.c.set(anim); this.actT = secs; }
   show(v) { this.hidden = !v; this.root.visible = v; }
   remove() { this.game.scene.remove(this.root); }
+  // Swap the model for one with a different look (keepers only).
+  setLook(look) {
+    const old = this.root;
+    this.c = new Critter(this.species, look);
+    this.root = this.c.root;
+    this.root.visible = old.visible;
+    this.game.scene.remove(old);
+    this.game.scene.add(this.root);
+  }
   update(dt, t) {
     const w = this.game.world;
     if (this.path.length) {
@@ -43,7 +53,8 @@ class Actor {
     const walking = this.path.length > 0 || this.moving;
     this.moving = false;
     if (this.actT > 0) this.actT -= dt;
-    if (walking) { this.c.set('walk'); this.actT = 0; }
+    if (this.remote) { /* the shared world says what this one is doing */ }
+    else if (walking) { this.c.set('walk'); this.actT = 0; }
     else if (this.actT <= 0) this.c.set(this.base);
     const under = w.at(this.x, this.z) || this.tile;
     const ty = under.water && !under.pier ? this.y : w.standY(under);
@@ -51,21 +62,23 @@ class Actor {
     this.heading += angDiff(this.heading, this.turn) * Math.min(1, dt * 11);
     this.root.position.set(this.x, this.y, this.z);
     this.root.rotation.y = this.heading;
-    if (!this.hidden) this.c.update(dt, t);
+    if (!this.hidden && !this.game.headless) this.c.update(dt, t);
   }
 }
 
 export class Game {
-  constructor({ world, scene, fx, mist, hooks }) {
+  // `shared` is a world several keepers play in at once (it runs on the
+  // server); `headless` skips the drawing-only work.
+  constructor({ world, scene, fx, mist, hooks, shared = false, headless = false }) {
     this.world = world; this.scene = scene; this.fx = fx; this.mist = mist; this.h = hooks;
+    this.shared = shared; this.headless = headless;
+    this.keepers = new Map();       // player id → keeper
+    this.keeper = null;             // the keeper acting right now
+    this.me = null;                 // the keeper this player controls (none on the server)
     this.state = null;
     this.models = new Map();        // build id → model
     this.guestActors = new Map();   // guest id → actor
     this.wildActors = new Map();    // wild id → actor
-    this.mode = null;               // { type: 'place' | 'remove' | 'assign', ... }
-    this.selected = null;
-    this.busy = null;
-    this.sleeping = false;
     this.rain = 0;
     this.tick = 0;
     this.party = 0;
@@ -77,8 +90,49 @@ export class Game {
     this.locals = [];               // townsfolk out for a walk
     this.touristActors = new Map(); // visitor id → actor
     this.findModels = new Map();    // find id → floating picture
-    this.fishing = null;            // { phase: 'wait' | 'bite', t }
     this.findT = 0;
+  }
+
+  // Each keeper has their own mode, selection, task, fishing line and bed.
+  // The rules read and write them through whoever is acting.
+  get mode() { return this.keeper ? this.keeper.mode : null; }                 // { type: 'place' | 'remove' | 'assign', ... }
+  set mode(v) { if (this.keeper) this.keeper.mode = v; }
+  get selected() { return this.keeper ? this.keeper.selected : null; }
+  set selected(v) { if (this.keeper) this.keeper.selected = v; }
+  get busy() { return this.keeper ? this.keeper.busy : null; }
+  set busy(v) { if (this.keeper) this.keeper.busy = v; }
+  get fishing() { return this.keeper ? this.keeper.fishing : null; }           // { phase: 'wait' | 'bite', t }
+  set fishing(v) { if (this.keeper) this.keeper.fishing = v; }
+  get sleeping() { return this.keeper ? this.keeper.sleeping : false; }
+  set sleeping(v) { if (this.keeper) this.keeper.sleeping = v; }
+  get allAsleep() { if (!this.keepers.size) return false; for (const k of this.keepers.values()) if (!k.sleeping) return false; return true; }
+  // Do something as one keeper.
+  as(k, f) {
+    const prev = this.keeper;
+    this.keeper = k;
+    try { return f(); } finally { this.keeper = prev; }
+  }
+  addKeeper(pid, name, look, tile) {
+    const k = new Actor(this, 'keeper', tile || this.world.lodgeDoor, look);
+    Object.assign(k, { pid, name: name || 'Keeper', look, speed: 4.2, mode: null, selected: null, busy: null, fishing: null, sleeping: false, tips: null });
+    k.heading = k.turn = 0;
+    this.keepers.set(pid, k);
+    return k;
+  }
+  removeKeeper(pid) {
+    const k = this.keepers.get(pid);
+    if (!k) return;
+    k.remove();
+    this.keepers.delete(pid);
+    if (this.keeper === k) this.keeper = null;
+  }
+  // Who a homeless animal trots after: whoever befriended it, else whoever is closest.
+  leader(g, a) {
+    const own = this.keepers.get(g.owner);
+    if (own && !own.sleeping) return own;
+    let best = null, bd = 1e9;
+    for (const k of this.keepers.values()) { const d = Math.hypot(k.x - a.x, k.z - a.z); if (d < bd) { bd = d; best = k; } }
+    return best;
   }
 
   // ---------------------------------------------------------------- start, save, load
@@ -88,16 +142,20 @@ export class Game {
       return s && s.v === 1 ? s : null;
     } catch { return null; }
   }
-  save() {
+  // Write where everyone is standing into the state, ready to be saved.
+  sync() {
     const s = this.state;
-    if (!s) return;
     for (const g of s.guests) { const a = this.guestActors.get(g.id); if (a) { g.q = a.tile.q; g.r = a.tile.r; } }
-    s.kq = this.keeper.tile.q; s.kr = this.keeper.tile.r;
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch { /* storage may be off */ }
+    if (this.me) { s.kq = this.me.tile.q; s.kr = this.me.tile.r; }
+    return s;
+  }
+  save() {
+    if (!this.state || this.shared) return;
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.sync())); } catch { /* storage may be off */ }
   }
   static wipe() { try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ } }
 
-  start(saved, name) {
+  start(saved, name, look) {
     const w = this.world;
     const s = this.state = saved || newState(name);
     // Hotels saved before Port Marlow existed get the new bits filled in.
@@ -105,10 +163,10 @@ export class Game {
     for (const [k, v] of [['finds', []], ['jobs', []], ['tourists', []], ['rep', 0], ['parcel', null], ['nextTourist', 0]]) if (s[k] === undefined) s[k] = v;
     if (!saved) s.builds.push({ id: s.nextId++, type: 'fishspot', q: this.fishTile.q, r: this.fishTile.r, grow: 0.6, fixed: true });
     for (const b of s.builds) this.addModel(b, true);
-    const kt = (saved && w.get(s.kq, s.kr)) || w.lodgeDoor;
-    this.keeper = new Actor(this, 'keeper', kt);
-    this.keeper.speed = 4.2;
-    this.keeper.heading = this.keeper.turn = 0;
+    if (!this.shared) {
+      this.me = this.keeper = this.addKeeper('solo', s.name, look, (saved && w.get(s.kq, s.kr)) || w.lodgeDoor);
+      this.me.tips = s.tips;
+    }
     for (const g of [...s.guests]) {
       const a = this.spawnGuest(g, w.get(g.q, g.r) || w.shore);
       if (g.st === 'leaving') this.sendOff(g, a);
@@ -169,7 +227,7 @@ export class Game {
     if (!this.world.canBuild(tile, s.stars)) return 'Nothing can go there.';
     if (s.leaves < def.cost) return `You need ${def.cost} leaves for that.`;
     if (!def.walk) {
-      if (this.keeper.tile === tile) return 'You are standing there!';
+      for (const k of this.keepers.values()) if (k.tile === tile) return k === this.keeper ? 'You are standing there!' : `${k.name} is standing there.`;
       for (const a of [...this.guestActors.values(), ...this.wildActors.values()]) if (a.tile === tile && !a.hidden) return 'Someone is standing there.';
       if (this.world.wouldBlock(tile, s.stars)) return 'That would block the way. Leave a path to walk along.';
     }
@@ -405,7 +463,7 @@ export class Game {
       // Friends now: the animal follows the keeper home.
       w.rescued = true;
       const d = WILD[id];
-      const g = { id: s.nextId++, species: d.species, name: d.name, st: 'following', room: null, wishJoy: 0.1, left: 0, wish: null, nextWish: 0, resident: id, q: a.tile.q, r: a.tile.r };
+      const g = { id: s.nextId++, species: d.species, name: d.name, st: 'following', room: null, wishJoy: 0.1, left: 0, wish: null, nextWish: 0, resident: id, q: a.tile.q, r: a.tile.r, owner: this.keeper.pid };
       s.guests.push(g); s.seen[d.species] = true;
       this.wildActors.delete(id);
       a.wild = null; a.g = g; a.base = 'idle'; a.speed = 3.2;
@@ -522,7 +580,8 @@ export class Game {
     for (const [k, wt] of kinds) { if (roll < wt) { kind = k; break; } roll -= wt; }
     if (this.night && id !== 'town' && Math.random() < 0.5) kind = 'star';
     const def = FIND[kind], seen = w.flood(w.lodgeDoor, s.stars);
-    const ok = (t) => t.region === id && seen.has(t) && !t.water && !t.feat && !t.build && !t.find && !t.reserved && t !== w.lodgeDoor && t !== this.keeper?.tile;
+    const here = new Set([...this.keepers.values()].map((k) => k.tile));
+    const ok = (t) => t.region === id && seen.has(t) && !t.water && !t.feat && !t.build && !t.find && !t.reserved && t !== w.lodgeDoor && !here.has(t);
     let tiles = w.list.filter((t) => ok(t) && (!def.shore || t.coast === 1));
     if (!tiles.length) tiles = w.list.filter(ok);
     if (!tiles.length) return null;
@@ -597,7 +656,7 @@ export class Game {
     s.tourists.splice(s.tourists.indexOf(t), 1);
     this.touristActors.delete(t.id);
     const g = this.newGuest(t.species);
-    g.name = t.name; g.st = 'following';
+    g.name = t.name; g.st = 'following'; g.owner = this.keeper.pid;
     a.tourist = null; a.g = g; a.speed = 3.4; a.path = [];
     this.guestActors.set(g.id, a);
     s.stats.invited++;
@@ -691,6 +750,7 @@ export class Game {
     const guests = s.guests.filter((g) => g.st === 'home').map((g) => ({ kind: 'guest', id: g.id, name: g.name, pay: 14, where: 'at Fernwood' }));
     const town = [...LOCALS.map((l, i) => ({ kind: 'local', id: i, name: l.name, pay: 7, where: 'out for a walk in town' })), { kind: 'npc', id: 'captain', name: NPCS.captain.name, pay: 9, where: 'at the lighthouse' }];
     s.parcel = guests.length && Math.random() < 0.5 ? pick(guests) : pick(town);
+    this.h.toast(`A parcel for <b>${s.parcel.name}</b>, ${s.parcel.where}. Look for the 📦 bubble.`, '📦');
     this.h.sound('pick');
     this.h.changed();
     return true;
@@ -751,6 +811,9 @@ export class Game {
     if (!p) { this.h.toast('There is no way to walk there.'); return; }
     k.walk(p, () => { if (tile !== k.tile) k.face(tile.x, tile.z); if (then) then(); });
   }
+  // Walk to a plant and look after it, or to the fishing spot and cast.
+  tendAt(b) { this.goTo(this.tileOf(b), () => { if (this.state.builds.includes(b)) this.tend(b); }); }
+  castAt(b) { this.goTo(this.tileOf(b), () => this.cast()); }
   goToActor(a, then) {
     if (this.busy || this.sleeping) return;
     this.stopFishing();
@@ -778,22 +841,42 @@ export class Game {
     k.turn = Math.atan2(dx, dz);
     k.moving = true;
   }
-  goHome() { this.stopFishing(); this.keeper.place(this.world.lodgeDoor); this.busy = null; }
+  // In a shared world a keeper's own screen walks them, then tells the world where they are.
+  pushTo(x, z, turn) {
+    const k = this.keeper, t = this.world.at(x, z);
+    if (!k || k.busy || k.sleeping || !this.world.walkable(t, this.state.stars)) return false;
+    this.stopFishing();
+    k.path = []; k.then = null;
+    k.x = x; k.z = z; k.tile = t; k.turn = turn; k.pushed = 0.25;
+    return true;
+  }
+  goHome() { if (this.sleeping) return; this.stopFishing(); this.keeper.place(this.world.lodgeDoor); this.busy = null; }
 
   sleep() {
     this.stopFishing();
     this.sleeping = true;
     this.keeper.show(false);
+    this.keeper.path = []; this.keeper.then = null;
     this.mode = null;
     this.h.sound('sleep');
+    if (!this.allAsleep) this.h.toast('The night will fly by once every keeper is in bed. Click anywhere to get up again.', '😴');
   }
+  getUp() {
+    if (!this.sleeping) return;
+    this.sleeping = false;
+    this.keeper.place(this.world.lodgeDoor);
+    this.keeper.show(true);
+  }
+  // Say hello to the other keepers.
+  wave() { if (!this.sleeping) { this.keeper.act('wave', 1.6); this.keeper.waveT = 2.2; this.h.sound('chirp'); } }
 
   select(sel) { this.selected = sel; this.h.select(sel); }
   setMode(mode) { this.mode = mode; this.h.changed(); }
 
   tip(key, text) {
-    if (this.state.tips[key]) return;
-    this.state.tips[key] = 1;
+    const tips = this.keeper?.tips || this.state.tips;
+    if (tips[key]) return;
+    tips[key] = 1;
     this.h.tip(text);
   }
 
@@ -832,7 +915,7 @@ export class Game {
 
   // The player clicked a tile.
   clickTile(t) {
-    if (this.sleeping) return;
+    if (this.sleeping) { if (!this.allAsleep) this.getUp(); return; }
     const m = this.mode, s = this.state;
     if (m?.type === 'place') { this.place(t, m.build); return; }
     if (m?.type === 'remove') { if (t.build) this.remove(t.build); return; }
@@ -845,7 +928,7 @@ export class Game {
       const def = BUILD[t.build.type];
       this.select({ kind: def.room ? 'room' : 'build', ref: t.build });
       const b = t.build;
-      if (def.grows) this.goTo(t, () => this.tend(b));
+      if (def.grows) this.tendAt(b);
       else if (def.fish) this.goTo(t, () => this.cast());
       return;
     }
@@ -920,44 +1003,58 @@ export class Game {
     if (!s) return;
     const w = this.world;
     // The clock.
-    const speed = this.sleeping ? 55 : this.timeScale || 1;
+    const speed = this.allAsleep ? 55 : this.timeScale || 1;
+    const home = this.shared ? null : this.me;
     const before = Math.floor(s.clock);
     s.clock += (dt / HOUR_SECONDS) * speed;
     for (let h = before + 1; h <= Math.floor(s.clock); h++) this.onHour(h % 24);
-    if (this.sleeping && this.hour >= 6 && this.hour < 7) {
-      this.sleeping = false;
-      this.keeper.place(w.lodgeDoor);
-      this.keeper.show(true);
-      this.keeper.act('happy', 1.2);
-      this.h.banner(`Day ${this.day}`, 'Good morning, ' + s.name + '!', '🌅');
-      this.h.sound('morning');
+    if (this.hour >= 6 && this.hour < 7) {
+      for (const k of this.keepers.values()) {
+        if (!k.sleeping) continue;
+        this.as(k, () => {
+          k.sleeping = false;
+          k.place(w.lodgeDoor);
+          k.show(true);
+          k.act('happy', 1.2);
+          this.h.banner(`Day ${this.day}`, 'Good morning, ' + k.name + '!', '🌅');
+          this.h.sound('morning');
+        });
+      }
     }
     const raining = s.clock >= s.rainFrom && s.clock < s.rainTo;
     this.rain = clamp(this.rain + (raining ? dt : -dt) * 0.25);
 
-    if (this.busy) {
-      this.busy.t -= dt;
-      if (this.busy.t <= 0) { const f = this.busy.done; this.busy = null; f(); }
-    }
-    this.keeper.update(dt, t);
-    if (this.keeper.c.anim === 'walk') {
-      this.stepT = (this.stepT || 0) - dt;
-      if (this.stepT <= 0) { this.stepT = 0.22; this.fx.burst('dust', this.keeper.x, this.keeper.y + 0.05, this.keeper.z, 1, { speed: 0.3, up: 0.25, gravity: 0, size: 0.28, grow: 1.4, life: 0.5, spread: 0.08 }); }
-    }
     const dh = (dt / HOUR_SECONDS) * speed;
     const night = this.night;
-    const kt = this.keeper.tile;
-    if (kt.find && !this.sleeping) this.pickFind(kt);
+    // Each keeper in turn.
+    for (const k of [...this.keepers.values()]) {
+      this.keeper = k;
+      if (k.busy) {
+        k.busy.t -= dt;
+        if (k.busy.t <= 0) { const f = k.busy.done; k.busy = null; f(); }
+      }
+      if (k.waveT > 0) k.waveT -= dt;
+      if (k.pushed > 0) { k.pushed -= dt; k.moving = true; }
+      k.update(dt, t);
+      if (k.c.anim === 'walk' && !k.hidden) {
+        k.stepT = (k.stepT || 0) - dt;
+        if (k.stepT <= 0) { k.stepT = 0.22; this.fx.burst('dust', k.x, k.y + 0.05, k.z, 1, { speed: 0.3, up: 0.25, gravity: 0, size: 0.28, grow: 1.4, life: 0.5, spread: 0.08 }); }
+      }
+      const kt = k.tile;
+      if (kt.find && !k.sleeping) this.pickFind(kt);
+      if (k.fishing) {
+        const f = k.fishing;
+        f.t -= dt;
+        if (kt !== this.fishTile) this.stopFishing();
+        else if (f.t <= 0 && f.phase === 'wait') { f.phase = 'bite'; f.t = 1.5; this.h.sound('wish'); const b = this.bobber; this.fx.burst('drop', b.x, 0.4, b.z, 3, { speed: 0.6, up: 0.9, gravity: 2.5, life: 0.5, size: 0.2 }); }
+        else if (f.t <= 0) this.land(1);
+      }
+    }
+    this.keeper = home;
+    const keeperTiles = new Set([...this.keepers.values()].map((k) => k.tile));
     for (const m of this.findModels.values()) m.position.y = m.userData.y + Math.sin(t * 2.4 + m.userData.seed) * 0.07;
     this.findT += dh;
     if (this.findT > 0.2) { this.findT = 0; this.spawnFind(); }
-    if (this.fishing) {
-      const f = this.fishing;
-      f.t -= dt;
-      if (kt !== this.fishTile) this.stopFishing();
-      else if (f.t <= 0 && f.phase === 'wait') { f.phase = 'bite'; f.t = 1.5; this.h.sound('wish'); const b = this.bobber; this.fx.burst('drop', b.x, 0.4, b.z, 3, { speed: 0.6, up: 0.9, gravity: 2.5, life: 0.5, size: 0.2 }); }
-      else if (f.t <= 0) this.land(1);
-    }
     // Port Marlow goes about its day.
     const town = w.town;
     for (const a of this.npcs.values()) a.update(dt, t);
@@ -971,9 +1068,9 @@ export class Game {
       if (a.hold > 0) a.hold -= dt;
       if (g.st === 'following') {
         a.followT = (a.followT || 0) - dt;
-        if (a.followT <= 0 && this.mode?.guest !== g) {
+        const k = this.leader(g, a);
+        if (k && a.followT <= 0 && ![...this.keepers.values()].some((o) => o.mode?.guest === g)) {
           a.followT = 0.5;
-          const k = this.keeper;
           if (hexDist(a.tile.q, a.tile.r, k.tile.q, k.tile.r) > 1) {
             const p = w.path(a.tile, k.tile, s.stars);
             if (p) { if (p[p.length - 1] === k.tile) p.pop(); a.walk(p); } else a.place(this.nearFree(k.tile) || k.tile);
@@ -996,7 +1093,7 @@ export class Game {
           a.wander = (a.wander ?? rand(2, 6)) - dt;
           if (a.wander <= 0 && !a.path.length && !(a.hold > 0) && !g.wish && a.actT <= 0) {
             a.wander = rand(4, 10);
-            const opts = w.around(home, 2).map(([n]) => n).filter((n) => w.walkable(n, s.stars) && n !== this.keeper.tile);
+            const opts = w.around(home, 2).map(([n]) => n).filter((n) => w.walkable(n, s.stars) && !keeperTiles.has(n));
             if (opts.length) {
               const p = w.path(a.tile, pick(opts), s.stars);
               if (p && p.length <= 5) { a.speed = 1.2; a.walk(p); }
@@ -1029,7 +1126,7 @@ export class Game {
       this.tick = 0.4;
       for (const b of s.builds) if (BUILD[b.type].needs) b._ok = w.comfort(this.tileOf(b))[BUILD[b.type].needs] >= 2;
       this.refreshWild();
-      if (kt.town && !s.stats.town) {
+      if (!s.stats.town && [...keeperTiles].some((kt) => kt.town)) {
         s.stats.town = 1;
         this.h.banner('Port Marlow', 'Jobs on the notice board, a market, a post office and visitors to invite.', '🏙️');
         this.h.sound('bell');
@@ -1059,7 +1156,7 @@ export class Game {
       }
     }
     this.autosave = (this.autosave || 0) + dt;
-    if (this.autosave > 20) { this.autosave = 0; this.save(); }
+    if (this.autosave > 20 && !this.shared) { this.autosave = 0; this.save(); }
   }
 
   goals() {
@@ -1071,13 +1168,16 @@ export class Game {
 
   checkStar() {
     const s = this.state, gl = this.goals();
-    if (!gl || !gl.goals.every((g) => g.done) || this.sleeping) return;
+    if (!gl || !gl.goals.every((g) => g.done) || this.allAsleep) return;
     s.stars++;
     const bonus = 40 + s.stars * 20;
     s.leaves += bonus;
-    const k = this.keeper;
-    this.fx.burst('star', k.x, k.y + 1.2, k.z, 14, { speed: 3, up: 3.2, life: 1.8, size: 0.55 });
-    k.act('happy', 2.5);
+    let k = this.world.lodgeDoor;
+    for (k of this.keepers.values()) {
+      if (k.sleeping) continue;
+      this.fx.burst('star', k.x, k.y + 1.2, k.z, 14, { speed: 3, up: 3.2, life: 1.8, size: 0.55 });
+      k.act('happy', 2.5);
+    }
     this.h.sound('star');
     if (s.stars >= 5) {
       s.finale = true;
@@ -1085,7 +1185,7 @@ export class Game {
       this.h.banner('Five-star sanctuary!', 'Fernwood is the happiest hotel on the sea. Enjoy the fireworks!', '🎆');
     } else {
       const id = Object.keys(REGIONS).find((r) => REGIONS[r].star === s.stars);
-      this.mist.open(id, k);
+      this.mist.open(id, { x: k.x, z: k.z });
       this.h.banner(`Star ${s.stars}!`, `${REGIONS[id].name} is open to explore. +${bonus} leaves`, '⭐');
       this.h.starUp(id);
     }
@@ -1107,6 +1207,7 @@ export class Game {
     }
     for (const [id, a] of this.wildActors) out.push({ key: 'w' + id, x: a.x, y: a.y + 1.2, z: a.z, icon: '🐾', cls: 'paw' });
     const top = (a) => a.y + 1.05 * a.root.scale.y + 0.25;
+    for (const [pid, k] of this.keepers) if (k !== this.me && !k.hidden) out.push({ key: 'k' + pid, x: k.x, y: k.y + 1.42, z: k.z, icon: (k.waveT > 0 ? '👋 ' : '') + k.name, cls: 'name' });
     const pa = this.parcelActor();
     if (pa && !pa.hidden) out.push({ key: 'parcel', x: pa.x, y: top(pa) + (pa.g?.wish ? 0.55 : 0), z: pa.z, icon: '📦', cls: 'paw' });
     for (const [id, a] of this.npcs) if (a !== pa) out.push({ key: 'n' + id, x: a.x, y: top(a), z: a.z, icon: NPCS[id].icon, cls: 'shop' });

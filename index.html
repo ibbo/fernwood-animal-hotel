@@ -18,6 +18,7 @@
       <div class="pill" id="stars" title="Stars"></div>
       <div class="pill" id="leaves" title="Leaves pay for everything you build">🍃 <b>0</b></div>
       <div class="pill" id="bag" title="Snacks in your bag"></div>
+      <button class="pill" id="friends" title="Who is playing, and the code to invite friends" hidden></button>
       <span class="grow"></span>
       <button class="round" id="btn-sound" title="Sound">🔊</button>
       <button class="round" id="btn-menu" title="Menu">☰</button>
@@ -31,9 +32,11 @@
       <button id="btn-build"><span>🔨</span>Build<kbd>B</kbd></button>
       <button id="btn-friends"><span>📖</span>Friends<kbd>F</kbd></button>
       <button id="btn-home" title="Look at your keeper"><span>🧭</span>Find me<kbd>Space</kbd></button>
+      <button id="btn-view" title="See through your keeper's eyes, or from above"><span>👀</span>My eyes<kbd>V</kbd></button>
     </div>
   </div>
 
+  <div id="cross" hidden></div>
   <div id="banner" hidden><div class="icon"></div><h2></h2><p></p></div>
   <div id="modal" hidden><div class="sheet card"></div></div>
 
@@ -43,11 +46,25 @@
       <h1>Fernwood</h1>
       <h3>Animal Hotel</h3>
       <p>Welcome guests off the ferry, make each one a cosy home,<br>and befriend the wild animals hiding on the island.</p>
-      <div class="row"><input id="name" maxlength="14" placeholder="Your name" autocomplete="off"></div>
+      <div class="row who">
+        <button id="lookpic" title="Change how your keeper looks"><img alt="Your keeper"><span>🎨</span></button>
+        <input id="name" maxlength="14" placeholder="Your name" autocomplete="off">
+      </div>
+      <div id="lookbox" class="card" hidden></div>
       <div class="row">
         <button class="big" id="btn-continue" hidden>Continue</button>
         <button class="big alt" id="btn-new">Start a new hotel</button>
       </div>
+      <div class="row">
+        <button class="big blue" id="btn-friends-open">👭 Play with friends</button>
+      </div>
+      <div id="sharebox" class="card" hidden>
+        <button class="big blue" id="btn-rejoin" hidden></button>
+        <div class="line"><input id="code" maxlength="5" placeholder="CODE" autocomplete="off" spellcheck="false"><button class="big blue" id="btn-join">Join a friend's hotel</button></div>
+        <div class="line"><button class="big alt" id="btn-share-new">Start a shared hotel</button><button class="big alt" id="btn-share-mine" hidden>Share my hotel</button></div>
+        <small>Start a shared hotel, then give your friends its five-letter code.</small>
+      </div>
+      <div id="titlemsg"></div>
     </div>
   </div>
   <div id="fail" hidden></div>

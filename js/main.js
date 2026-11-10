@@ -8,9 +8,10 @@ import { portrait } from './gfx/critters.js';
 import { Fx } from './gfx/fx.js';
 import { World, WATER_Y } from './world.js';
 import { Game } from './game.js';
+import { NetGame, lastCode, forgetCode } from './net.js';
 import { UI } from './ui.js';
 import { Sound } from './audio.js';
-import { BUILD, ASPECTS, REGIONS } from './data.js';
+import { BUILD, ASPECTS, REGIONS, cleanLook } from './data.js';
 import { clamp, lerp } from './util.js';
 
 const $ = (id) => document.getElementById(id);
@@ -47,7 +48,8 @@ function boot() {
   const view = {
     target: new THREE.Vector3(world.lodge.x, 1, world.lodge.z), goal: { x: world.lodge.x, z: world.lodge.z },
     yaw: 0.5, pitch: 0.62, dist: 40, wantDist: 40, wantPitch: 0.62, follow: true, cine: 0,
-    lookAt(x, z) { this.follow = false; this.goal = { x, z }; },
+    fp: false, look: -0.12, eyeY: 1, fpNow: false,       // first person: through the keeper's eyes
+    lookAt(x, z) { if (this.fp) return; this.follow = false; this.goal = { x, z }; },
   };
   const v3 = new THREE.Vector3(), tint = new THREE.Color(), tint2 = new THREE.Color();
   let W = 1, H = 1;
@@ -65,6 +67,7 @@ function boot() {
   window.addEventListener('resize', resize);
   resize();
   const project = (x, y, z) => {
+    if (view.fpNow && Math.hypot(x - camera.position.x, z - camera.position.z) > 26) return null;
     v3.set(x, y, z).project(camera);
     if (v3.z > 1 || v3.x < -1.15 || v3.x > 1.15 || v3.y < -1.15 || v3.y > 1.25) return null;
     return { x: (v3.x * 0.5 + 0.5) * W, y: (-v3.y * 0.5 + 0.5) * H };
@@ -79,32 +82,88 @@ function boot() {
     openShop: (id) => ui.openShop(id), openBoard: () => ui.openBoard(),
     starUp: (id) => {
       ui.newStar = true; setTimeout(() => { ui.newStar = false; }, 1500);
+      if (view.fp) return;
       const tiles = world.list.filter((t) => !t.water && t.region === id);
       const cx = tiles.reduce((a, t) => a + t.x, 0) / tiles.length, cz = tiles.reduce((a, t) => a + t.z, 0) / tiles.length;
       view.lookAt(cx, cz); view.cine = 7; view.wantDist = 46;
     },
   };
-  const game = new Game({ world, scene, fx, mist, hooks });
-  const face = (species) => portrait(renderer, species);
+  let game = new Game({ world, scene, fx, mist, hooks });
+  const face = (species, look) => portrait(renderer, species, look);
   ui = new UI({ game, face, sound, view });
   ui.onReset = () => { Game.wipe(); location.reload(); };
+  ui.onView = () => setFp(!view.fp);
+  ui.onLeave = () => { forgetCode(); game.leave(); location.href = location.pathname; };
   let playing = false;
 
-  function begin(state, name) {
+  // How this player's keeper looks, remembered between visits.
+  let look = cleanLook(null);
+  try { look = cleanLook(JSON.parse(localStorage.getItem('fernwood2.look'))); } catch { /* use the usual look */ }
+  const drawLook = () => { $('lookpic').querySelector('img').src = face('keeper', look); };
+  const keepLook = (l) => {
+    look = cleanLook(l);
+    try { localStorage.setItem('fernwood2.look', JSON.stringify(look)); } catch { /* storage may be off */ }
+    drawLook();
+  };
+  ui.onLook = (l) => {
+    keepLook(l);
+    if (game.online) game.setLook(look);
+    else if (game.me) { game.me.look = look; game.me.setLook(look); }
+  };
+  drawLook();
+  $('lookpic').onclick = () => {
+    const box = $('lookbox');
+    box.hidden = !box.hidden;
+    $('sharebox').hidden = true;
+    if (!box.hidden) ui.lookPicker(box, { ...look }, (l) => keepLook({ ...l }));
+  };
+  const myName = () => $('name').value.trim() || 'Keeper';
+  const say = (text) => { $('titlemsg').textContent = text || ''; };
+
+  function enter(fresh) {
     sound.wake();
     if (document.activeElement) document.activeElement.blur();
-    game.start(state, name);
     playing = true;
     $('title').classList.add('out');
     setTimeout(() => { $('title').hidden = true; }, 900);
     $('hud').hidden = false;
     view.wantDist = 27; view.wantPitch = 0.84; view.follow = true;
     sound.play('morning');
-    if (!state) {
-      ui.banner('Welcome to Fernwood', `Good morning, ${game.state.name}! Your first guest is waiting by the pier.`, '🌿');
-      setTimeout(() => ui.tip('Click the ground to walk there, or use W A S D. Drag to slide the view, scroll to zoom, right-drag to turn.'), 5200);
+    if (fresh) {
+      setTimeout(() => ui.tip('Click the ground to walk there, or use W A S D. Drag to slide the view, scroll to zoom, right-drag to turn. Press V to see through your keeper\'s eyes.'), 5200);
       setTimeout(() => ui.tip('There is always something to do: water your plants, pick up what you find, fish off the pier, or cross the bridge to Port Marlow.'), 40000);
     }
+  }
+  function begin(state, name) {
+    game.start(state, name, look);
+    enter(!state);
+    if (!state) ui.banner('Welcome to Fernwood', `Good morning, ${game.state.name}! Your first guest is waiting by the pier.`, '🌿');
+  }
+
+  // A hotel shared with friends: the server runs it and this screen follows along.
+  let opening = false;
+  async function beginShared({ code, state }) {
+    if (opening) return;
+    opening = true;
+    say(code ? `Opening hotel ${code}…` : 'Opening a shared hotel…');
+    const g = new NetGame({ world, scene, fx, mist, hooks });
+    try { await g.connect({ code, state, name: myName(), look }); } catch (err) {
+      scene.remove(g.ferry);
+      g.leave();
+      opening = false;
+      say(err.message);
+      return;
+    }
+    scene.remove(game.ferry);
+    game = g; ui.game = g; window.fernwood.game = g;
+    g.onState = () => ui.stateChanged();
+    g.onFatal = (text) => { playing = false; const f = $('fail'); f.hidden = false; f.textContent = text; };
+    try { history.replaceState(null, '', '?w=' + g.code); } catch { /* not allowed here */ }
+    say('');
+    const fresh = !code;
+    enter(fresh && !state);
+    if (fresh) { ui.banner(`Your hotel code is ${g.code}`, 'Give the code to your friends so they can join you.', '👭'); setTimeout(() => ui.openShare(), 1400); }
+    else ui.banner('Welcome back to the hotel', g.players.length > 1 ? `${g.players.length} keepers are here.` : 'You are the first one here today.', '👭');
   }
   if (saved) {
     $('btn-continue').hidden = false;
@@ -114,8 +173,31 @@ function boot() {
     $('btn-continue').classList.add('alt');
   }
   $('btn-continue').onclick = () => begin(saved);
+  // Playing with friends.
+  const linked = (new URLSearchParams(location.search).get('w') || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 5);
+  const known = linked.length === 5 ? linked : lastCode();
+  $('btn-friends-open').onclick = () => { $('sharebox').hidden = !$('sharebox').hidden; $('lookbox').hidden = true; };
+  if (known) {
+    $('btn-rejoin').hidden = false;
+    $('btn-rejoin').textContent = linked.length === 5 ? `Join hotel ${known}` : `Go back to hotel ${known}`;
+    $('btn-rejoin').onclick = () => beginShared({ code: known });
+    $('code').value = known;
+    if (linked.length === 5) $('sharebox').hidden = false;
+  }
+  $('btn-join').onclick = () => {
+    const code = $('code').value.toUpperCase().replace(/[^A-Z]/g, '');
+    if (code.length !== 5) { say('Type the five letters of your friend\'s hotel code.'); $('code').focus(); return; }
+    beginShared({ code });
+  };
+  $('btn-share-new').onclick = () => beginShared({});
+  if (saved) {
+    $('btn-share-mine').hidden = false;
+    $('btn-share-mine').textContent = `Share my hotel (Day ${Math.floor(saved.clock / 24) + 1})`;
+    $('btn-share-mine').onclick = () => beginShared({ state: saved });
+    $('btn-share-new').textContent = 'Start a fresh shared hotel';
+  }
   $('btn-new').onclick = () => {
-    const name = $('name').value.trim() || 'Keeper';
+    const name = myName();
     if (saved) {
       if (!$('btn-new').dataset.sure) { $('btn-new').dataset.sure = 1; $('btn-new').textContent = 'Replace the saved hotel?'; return; }
       Game.wipe();
@@ -135,8 +217,8 @@ function boot() {
     ray.setFromCamera(ndc, camera);
     const o = ray.ray.origin, d = ray.ray.direction;
     if (d.y >= -0.01) return null;
-    let s = (5.2 - o.y) / d.y;
-    const end = (-0.4 - o.y) / d.y;
+    let s = Math.max(0, (5.2 - o.y) / d.y);
+    const end = Math.min((-0.4 - o.y) / d.y, view.fpNow ? 34 : 1e9);
     let lastWater = null;
     for (; s < end; s += 0.06) {
       const x = o.x + d.x * s, y = o.y + d.y * s, z = o.z + d.z * s;
@@ -149,13 +231,15 @@ function boot() {
   }
   function actorAt(mx, my) {
     let best = null, bd = 1e9;
-    const zoom = clamp(27 / view.dist, 0.5, 2);
+    const f = H / (2 * Math.tan((camera.fov * Math.PI) / 360));          // pixels for one unit, one unit away
     for (const a of game.actors()) {
       if (a.hidden) continue;
-      for (const [dy, rad] of [[0.35, 34], [1.25, 26]]) {
+      const far = Math.hypot(a.x - camera.position.x, a.y + 0.6 - camera.position.y, a.z - camera.position.z);
+      const ppu = clamp(f / far, 12, 260);
+      for (const [dy, rad] of [[0.35, 0.62], [1.25 * a.root.scale.y * 0.8, 0.47]]) {
         const p = project(a.x, a.y + dy, a.z);
         if (!p) continue;
-        const d = Math.hypot(p.x - mx, p.y - my) / (rad * zoom);
+        const d = Math.hypot(p.x - mx, p.y - my) / (rad * ppu);
         if (d < 1 && d < bd) { bd = d; best = a; }
       }
     }
@@ -166,9 +250,10 @@ function boot() {
   let hover = null, mouse = { x: -1, y: -1, in: false };
   function updateHover() {
     const m = game.mode, rings = [];
-    hover = mouse.in && playing && !ui.modalOpen ? tileAt(mouse.x, mouse.y) : null;
+    const at = pointer();
+    hover = at.in && playing && !ui.modalOpen ? tileAt(at.x, at.y) : null;
     let cursor = null, color = '#ffffff', info = '';
-    const overActor = hover && !m && actorAt(mouse.x, mouse.y);
+    const overActor = at.in && playing && !ui.modalOpen && !m && actorAt(at.x, at.y);
     canvas.style.cursor = overActor ? 'pointer' : 'default';
     if (m?.type === 'place') {
       const def = BUILD[m.build];
@@ -208,6 +293,29 @@ function boot() {
   // ---------------------------------------------------------------- input
   const keys = new Set();
   let drag = null;
+  const locked = () => document.pointerLockElement === canvas;
+  // Where the player is pointing: the mouse, or the middle of the screen when looking around in first person.
+  const pointer = () => (locked() ? { x: W / 2, y: H / 2, in: true } : mouse);
+  function setFp(on) {
+    view.fp = on;
+    $('btn-view').classList.toggle('on', on);
+    if (!on && locked()) document.exitPointerLock();
+    if (on) {
+      view.follow = true; view.cine = 0; view.look = -0.12;
+      if (game.mode?.type !== 'place') ui.toggleTray(false);
+      if (!view.fpTold) { view.fpTold = true; ui.tip('You are seeing through your keeper\'s eyes. Click to look around with the mouse (Esc lets go of it). Click something to walk to it. Press V or scroll out to fly back up.'); }
+    } else { view.wantDist = Math.max(view.wantDist, 16); view.dist = 12; }
+  }
+  const lookBy = (dx, dy) => { view.yaw -= dx * 0.0026; view.look = clamp(view.look - dy * 0.0026, -1.25, 1.25); };
+  document.addEventListener('mousemove', (e) => { if (locked() && playing) lookBy(e.movementX, e.movementY); });
+  document.addEventListener('pointerlockchange', () => { $('cross').classList.toggle('on', locked()); });
+  function act(x, y) {
+    if (game.hook()) return;
+    const a = !game.mode && actorAt(x, y);
+    if (a) { game.clickActor(a); view.follow = true; return; }
+    const t = tileAt(x, y);
+    if (t) { game.clickTile(t); if (!game.mode) view.follow = true; }
+  }
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('pointerdown', (e) => {
     sound.wake();
@@ -219,9 +327,10 @@ function boot() {
     if (!drag || !playing) return;
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 6) drag.moved = true;
-    if (!drag.moved) return;
+    if (!drag.moved || locked()) return;
     drag.x = e.clientX; drag.y = e.clientY;
-    if (drag.button === 0) {
+    if (view.fp) lookBy(dx * 1.6, dy * 1.6);
+    else if (drag.button === 0) {
       const k = (view.dist * 0.56) / H;
       const c = Math.cos(view.yaw), s = Math.sin(view.yaw);
       view.follow = false; view.cine = 0;
@@ -239,15 +348,21 @@ function boot() {
     if (!d || d.moved || !playing) return;
     if (d.button === 2) { cancel(); return; }
     if (d.button !== 0) return;
-    if (game.hook()) return;
-    const a = !game.mode && actorAt(e.clientX, e.clientY);
-    if (a) { game.clickActor(a); view.follow = true; return; }
-    const t = tileAt(e.clientX, e.clientY);
-    if (t) { game.clickTile(t); if (!game.mode) view.follow = true; }
+    if (locked()) { act(W / 2, H / 2); return; }
+    act(e.clientX, e.clientY);
+    // In first person a click also takes hold of the mouse for looking around.
+    if (view.fp && !ui.modalOpen && canvas.requestPointerLock) { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch { /* not allowed just now */ } }
   });
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (!playing) return;
+    // Scrolling right in drops into the keeper's eyes, and scrolling out lifts back up.
+    // A short pause each way stops one long swipe from flipping the view twice.
+    const now = performance.now(), rested = now - (view.flipAt || 0) > 900;
+    if (view.fp) { if (e.deltaY > 0 && rested) { view.flipAt = now; setFp(false); } return; }
+    if (e.deltaY < 0 && view.wantDist <= 11.2 && view.dist < 12.5 && rested && now - (view.closeAt || now) > 450) { view.flipAt = now; setFp(true); return; }
     view.wantDist = clamp(view.wantDist * Math.exp(e.deltaY * 0.0012), 11, 62);
+    if (view.wantDist > 11.2) view.closeAt = 0; else if (!view.closeAt) view.closeAt = now;
   }, { passive: false });
   function cancel() {
     if (ui.modalOpen) { ui.closeModal(); return true; }
@@ -257,15 +372,20 @@ function boot() {
     return false;
   }
   window.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT') { if (e.key === 'Enter') ($('btn-continue').hidden ? $('btn-new') : $('btn-continue')).click(); return; }
+    if (e.target.tagName === 'INPUT') {
+      if (e.key === 'Enter') (e.target.id === 'code' ? $('btn-join') : linked.length === 5 ? $('btn-rejoin') : $('btn-continue').hidden ? $('btn-new') : $('btn-continue')).click();
+      return;
+    }
     if (!playing) return;
     const k = e.key.toLowerCase();
     keys.add(k);
     if (k === 'escape') { if (!cancel()) ui.openMenu(); }
     else if (ui.modalOpen) return;
-    else if (k === 'b') ui.toggleTray();
+    else if (k === 'b') { ui.toggleTray(); if (ui.trayOpen && locked()) document.exitPointerLock(); }
     else if (k === 'f') ui.openFriends();
-    else if (k === ' ') { if (!game.hook()) view.follow = true; e.preventDefault(); }
+    else if (k === 'v') setFp(!view.fp);
+    else if (k === 'h') game.wave();
+    else if (k === ' ') { if (view.fp) act(pointer().x, pointer().y); else if (!game.hook()) view.follow = true; e.preventDefault(); }
   });
   window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
   window.addEventListener('blur', () => keys.clear());
@@ -302,7 +422,7 @@ function boot() {
       }
       game.update(dt, time);
       if (view.cine > 0) { view.cine -= dt; if (view.cine <= 0) { view.follow = true; view.wantDist = 27; } }
-      if (view.follow) view.goal = { x: game.keeper.x, z: game.keeper.z };
+      if (view.follow) view.goal = { x: game.me.x, z: game.me.z };
       if (game.sleeping) view.goal = { x: world.lodge.x, z: world.lodge.z };
     } else {
       view.yaw += dt * 0.045;
@@ -313,11 +433,30 @@ function boot() {
     view.target.z = lerp(view.target.z, view.goal.z, k);
     const under = world.at(view.target.x, view.target.z);
     view.target.y = lerp(view.target.y, under && !under.water ? under.y + 0.5 : 0.6, 1 - Math.exp(-dt * 3));
-    view.dist = lerp(view.dist, view.wantDist + (game.sleeping ? 14 : 0), 1 - Math.exp(-dt * 4));
+    view.dist = lerp(view.dist, view.wantDist + (playing && game.sleeping ? 14 : 0), 1 - Math.exp(-dt * 4));
     view.pitch = lerp(view.pitch, view.wantPitch, 1 - Math.exp(-dt * 6));
-    const cp = Math.cos(view.pitch);
-    camera.position.set(view.target.x + Math.sin(view.yaw) * cp * view.dist, view.target.y + Math.sin(view.pitch) * view.dist, view.target.z + Math.cos(view.yaw) * cp * view.dist);
-    camera.lookAt(view.target);
+    const fp = playing && view.fp && !game.sleeping;
+    if (fp !== view.fpNow) {
+      view.fpNow = fp;
+      camera.fov = fp ? 66 : 30; camera.near = fp ? 0.12 : 1;
+      camera.updateProjectionMatrix();
+      $('cross').hidden = !fp;
+      if (fp) view.eyeY = game.me.y + 0.86;
+    }
+    if (playing && game.me) game.me.root.visible = !game.me.hidden && !fp;
+    if (fp) {
+      // Through the keeper's eyes.
+      const k = game.me, cl = Math.cos(view.look);
+      view.eyeY = lerp(view.eyeY, k.y + 0.86, 1 - Math.exp(-dt * 12));
+      const ey = view.eyeY + (k.c.anim === 'walk' ? Math.sin(time * 11) * 0.022 : 0);
+      camera.position.set(k.x, ey, k.z);
+      camera.lookAt(k.x - Math.sin(view.yaw) * cl, ey + Math.sin(view.look), k.z - Math.cos(view.yaw) * cl);
+      view.target.set(k.x, k.y + 0.5, k.z);
+    } else {
+      const cp = Math.cos(view.pitch);
+      camera.position.set(view.target.x + Math.sin(view.yaw) * cp * view.dist, view.target.y + Math.sin(view.pitch) * view.dist, view.target.z + Math.cos(view.yaw) * cp * view.dist);
+      camera.lookAt(view.target);
+    }
 
     const hour = playing ? game.hour : titleHour % 24, rain = playing ? game.rain : 0;
     sky.update(hour, rain, view.target);
@@ -327,10 +466,11 @@ function boot() {
     town.update(time, hour, sky.night);
     mist.update(dt);
     tint.copy(sky.cur.amb).multiplyScalar(sky.cur.ai * 0.45).add(tint2.copy(sky.cur.sun).multiplyScalar(sky.cur.si * 0.16));
-    fx.update(dt, view.target, rain, clamp(view.dist / 27, 0.6, 1.8), tint);
+    fx.update(dt, view.target, rain, fp ? 0.8 : clamp(view.dist / 27, 0.6, 1.8), tint);
     mist.material.emissiveIntensity = 0.3 * (1 - sky.night * 0.8);
     sound.setScene(sky.night, rain);
-    post.focus = view.dist;
+    post.focus = fp ? 8 : view.dist;
+    post.blurAmount = lerp(post.blurAmount, fp ? 0 : 1, 1 - Math.exp(-dt * 5));
     post.final.uniforms.fade.value = lerp(post.final.uniforms.fade.value, playing && game.sleeping ? 0.45 : 0, 1 - Math.exp(-dt * 3));
     if (playing) updateHover();
     post.render(scene);

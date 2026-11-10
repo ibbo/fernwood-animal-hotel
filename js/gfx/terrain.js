@@ -215,6 +215,16 @@ export function buildMist(world, scene, stars) {
   }
   return {
     material,
+    // Show the mist as it stands with this many stars, with no animation.
+    set(stars) {
+      for (const id in regions) {
+        const region = regions[id];
+        region.open = REGIONS[id].star <= stars; region.t = 1;
+        for (const u of region.puffs) u.d = 0;
+        setPuffs(region, region.open ? 1 : 0);
+        region.mesh.visible = !region.open;
+      }
+    },
     // Start clearing a region, spreading outward from a point.
     open(id, from) {
       const region = regions[id];

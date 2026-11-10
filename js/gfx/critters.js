@@ -3,6 +3,7 @@
 
 import { THREE } from './core.js';
 import { TAU, lerp, clamp, rand } from '../util.js';
+import { LOOK, cleanLook } from '../data.js';
 
 const SPH = new THREE.SphereGeometry(1, 20, 14);
 const CONE = new THREE.ConeGeometry(1, 1, 12);
@@ -229,47 +230,113 @@ const MAKE = {
   },
 };
 
-// The keeper: a small child in a straw hat.
-function keeper() {
+// The keeper: a small child. `look` picks the skin, hair, hat and clothes.
+function keeper(look) {
+  const L = cleanLook(look);
+  const skin = LOOK.skin[L.skin], hair = LOOK.hair[L.hair], o = L.outfit;
   const root = new THREE.Group(), rig = group(root, 0, 0, 0);
   const P = { root, rig, legs: [], ears: [], eyes: [], wings: [], by: 0.5, hr: 0.24, biped: true, human: true };
+  const C = {
+    rainbow: { leg: '#a98be0', shoe: '#ffffff', top: '#fdfbf5', sleeve: '#fdfbf5' },
+    dungarees: { leg: '#3d5a80', shoe: '#8a5b3c', top: '#f4f1e8', sleeve: '#f4f1e8' },
+    stripes: { leg: '#e0584c', shoe: '#ffffff', top: '#fdfbf5', sleeve: '#33508f' },
+    dress: { leg: skin, shoe: '#d9477a', top: '#ff8fb8', sleeve: '#ff8fb8' },
+    jumper: { leg: '#5874a8', shoe: '#6b4a34', top: '#5fae62', sleeve: '#5fae62' },
+    explorer: { leg: '#8a6a45', shoe: '#5b4030', top: '#d9c38e', sleeve: '#d9c38e' },
+  }[o];
   for (const sx of [-1, 1]) {
     const hip = group(rig, sx * 0.085, 0.3, 0);
-    part(hip, SPH, '#3d5a80', 0, -0.12, 0, [0.07, 0.16, 0.075]);
-    part(hip, SPH, '#8a5b3c', 0, -0.265, 0.025, [0.08, 0.05, 0.115]);
+    part(hip, SPH, C.leg, 0, -0.12, 0, [0.07, 0.16, 0.075]);
+    if (o === 'rainbow') {                                        // bright splashy leggings
+      part(hip, SPH, '#ff8ac4', sx * 0.03, -0.07, 0.045, [0.04, 0.05, 0.03]).castShadow = false;
+      part(hip, SPH, '#6ec8f2', -sx * 0.025, -0.16, 0.05, [0.035, 0.045, 0.03]).castShadow = false;
+      part(hip, SPH, '#ff8ac4', sx * 0.01, -0.2, -0.05, [0.04, 0.045, 0.03]).castShadow = false;
+      part(hip, SPH, '#ffe27a', sx * 0.045, -0.14, -0.02, [0.03, 0.04, 0.03]).castShadow = false;
+    }
+    if (o === 'dress') part(hip, SPH, '#ffffff', 0, -0.2, 0, [0.072, 0.06, 0.077]);
+    part(hip, SPH, C.shoe, 0, -0.265, 0.025, [0.08, 0.05, 0.115]);
     P.legs.push(hip);
   }
-  P.body = part(rig, SPH, '#f4f1e8', 0, 0.5, 0, [0.185, 0.22, 0.15]);
-  part(rig, SPH, '#3fae9e', 0, 0.45, 0.005, [0.192, 0.185, 0.157]);          // dungarees
-  part(rig, SPH, '#3fae9e', 0, 0.56, 0.1, [0.1, 0.1, 0.05]);
-  part(rig, SPH, '#6f9a52', 0, 0.52, -0.16, [0.14, 0.17, 0.09]);            // backpack
-  part(rig, TOR, '#e8553f', 0, 0.69, 0, [0.12, 0.12, 0.16], Math.PI / 2);   // scarf
+  P.body = part(rig, SPH, C.top, 0, 0.5, 0, [0.185, 0.22, 0.15]);
+  const band = (col, y, k = 1) => part(rig, SPH, col, 0, y, 0, [0.19 * k, 0.042, 0.155 * k]);
+  if (o === 'rainbow') {                                          // a tie-dye hoodie
+    band('#63cfd6', 0.61, 0.9); band('#ffe27a', 0.535, 1.0); band('#ff9ccb', 0.46, 1.02); band('#63cfd6', 0.385, 0.95); band('#ffe27a', 0.325, 0.8);
+    part(rig, SPH, '#fdfbf5', 0, 0.69, -0.1, [0.15, 0.085, 0.1]);                 // hood
+    part(rig, SPH, '#63cfd6', 0, 0.665, -0.13, [0.13, 0.05, 0.085]);
+  } else if (o === 'dungarees') {
+    part(rig, SPH, '#3fae9e', 0, 0.45, 0.005, [0.192, 0.185, 0.157]);
+    part(rig, SPH, '#3fae9e', 0, 0.56, 0.1, [0.1, 0.1, 0.05]);
+    part(rig, SPH, '#6f9a52', 0, 0.52, -0.16, [0.14, 0.17, 0.09]);               // backpack
+    part(rig, TOR, '#e8553f', 0, 0.69, 0, [0.12, 0.12, 0.16], Math.PI / 2);      // scarf
+  } else if (o === 'stripes') {
+    band('#33508f', 0.6, 0.92); band('#33508f', 0.51, 1.01); band('#33508f', 0.42, 1.01);
+  } else if (o === 'dress') {
+    part(rig, CONE, '#ff8fb8', 0, 0.36, 0, [0.27, 0.3, 0.23]);
+    part(rig, TOR, '#ffffff', 0, 0.68, 0, [0.11, 0.11, 0.12], Math.PI / 2);
+  } else if (o === 'jumper') {
+    part(rig, SPH, '#ffd24a', 0, 0.52, 0.135, [0.06, 0.06, 0.025]).castShadow = false;
+    part(rig, TOR, '#4b9450', 0, 0.68, 0, [0.115, 0.115, 0.14], Math.PI / 2);
+  } else {
+    part(rig, SPH, '#7a5a3a', 0, 0.52, -0.16, [0.14, 0.17, 0.09]);               // backpack
+    part(rig, TOR, '#4f9d5d', 0, 0.69, 0, [0.12, 0.12, 0.16], Math.PI / 2);
+    part(rig, SPH, '#8a6a45', 0, 0.37, 0, [0.19, 0.06, 0.156]);                  // belt
+  }
   for (const sx of [-1, 1]) {
     const sh = group(rig, sx * 0.19, 0.62, 0);
-    part(sh, SPH, '#f4f1e8', 0, -0.1, 0, [0.055, 0.13, 0.055]);
-    part(sh, SPH, '#f6c9a0', 0, -0.235, 0, 0.05);
+    part(sh, SPH, C.sleeve, 0, -0.1, 0, [0.055, 0.13, 0.055]);
+    if (o === 'rainbow') { part(sh, SPH, '#63cfd6', 0, -0.07, 0, [0.058, 0.035, 0.058]); part(sh, SPH, '#ff9ccb', 0, -0.15, 0, [0.057, 0.03, 0.057]); }
+    part(sh, SPH, skin, 0, -0.235, 0, 0.05);
     P.wings.push(sh);
   }
   const head = P.head = group(rig, 0, 0.92, 0);
-  part(head, SPH, '#f6c9a0', 0, 0, 0, [0.235, 0.22, 0.22]);
-  part(head, SPH, '#8a5330', 0, 0.035, -0.045, [0.245, 0.225, 0.215]);       // hair
+  part(head, SPH, skin, 0, 0, 0, [0.235, 0.22, 0.22]);
+  part(head, SPH, hair, 0, 0.035, -0.045, [0.245, 0.225, 0.215]);
+  const st = L.style;
+  if (st === 'ponytail') {                                        // pulled back, with loose strands at the front
+    part(head, SPH, '#ff8ac4', 0, 0.04, -0.245, 0.05);
+    part(head, SPH, hair, 0, -0.07, -0.3, [0.075, 0.17, 0.075], 0.35);
+    for (const sx of [-1, 1]) part(head, SPH, hair, sx * 0.212, -0.07, 0.075, [0.03, 0.15, 0.045], 0, 0, sx * 0.08);
+    part(head, SPH, hair, 0.05, 0.15, 0.13, [0.15, 0.055, 0.09], 0, 0, -0.25);
+  } else if (st === 'bunches') {
+    for (const sx of [-1, 1]) part(head, SPH, hair, sx * 0.2, -0.1, -0.02, [0.07, 0.13, 0.09]);
+  } else if (st === 'short') {
+    part(head, SPH, hair, 0, 0.14, 0.12, [0.2, 0.07, 0.1]);
+  } else if (st === 'long') {
+    part(head, SPH, hair, 0, -0.14, -0.1, [0.24, 0.26, 0.14]);
+    for (const sx of [-1, 1]) part(head, SPH, hair, sx * 0.2, -0.12, 0.0, [0.06, 0.2, 0.1]);
+    part(head, SPH, hair, 0, 0.14, 0.12, [0.2, 0.07, 0.1]);
+  } else {
+    for (let i = 0; i < 16; i++) {
+      const a = i * 2.399, e = 0.25 + ((i * 0.618) % 1) * 1.5;
+      const x = Math.sin(e) * Math.cos(a), y = Math.cos(e), z = Math.sin(e) * Math.sin(a);
+      if (z > 0.45 && y < 0.55) continue;
+      part(head, SPH, hair, x * 0.24, 0.03 + y * 0.22, -0.03 + z * 0.22, 0.075);
+    }
+  }
   for (const sx of [-1, 1]) {
-    part(head, SPH, '#8a5330', sx * 0.2, -0.1, -0.02, [0.07, 0.13, 0.09]);  // bunches
     P.eyes.push(eye(head, sx * 0.095, -0.005, 0.2, 0.032));
     part(head, SPH, '#ff9aa8', sx * 0.15, -0.07, 0.165, [0.04, 0.024, 0.02]).castShadow = false;
   }
   part(head, SPH, '#c9795a', 0, -0.085, 0.208, [0.03, 0.012, 0.01]).castShadow = false;
-  part(head, CYL, '#f0d48a', 0, 0.165, 0, [0.37, 0.025, 0.37]);              // hat brim
-  part(head, SPH, '#f0d48a', 0, 0.18, 0, [0.2, 0.15, 0.2]);
-  part(head, CYL, '#e8553f', 0, 0.2, 0, [0.205, 0.045, 0.205]);
+  if (L.hat === 'straw') {
+    part(head, CYL, '#f0d48a', 0, 0.165, 0, [0.37, 0.025, 0.37]);
+    part(head, SPH, '#f0d48a', 0, 0.18, 0, [0.2, 0.15, 0.2]);
+    part(head, CYL, '#e8553f', 0, 0.2, 0, [0.205, 0.045, 0.205]);
+  } else if (L.hat === 'bow') {
+    for (const sx of [-1, 1]) part(head, SPH, '#ff5f8f', 0.1 + sx * 0.055, 0.215, 0.07, [0.06, 0.045, 0.03], 0, 0, sx * 0.5);
+    part(head, SPH, '#ffd1df', 0.1, 0.215, 0.08, 0.025);
+  } else if (L.hat === 'cap') {
+    part(head, SPH, '#3f7fd6', 0, 0.12, -0.01, [0.245, 0.16, 0.235]);
+    part(head, CYL, '#3f7fd6', 0, 0.13, 0.2, [0.16, 0.018, 0.14]);
+  }
   root.scale.setScalar(0.95);
   return P;
 }
 
 // ---------------------------------------------------------------- animation
 export class Critter {
-  constructor(species) {
-    const P = species === 'keeper' ? keeper() : MAKE[species]();
+  constructor(species, look) {
+    const P = species === 'keeper' ? keeper(look) : MAKE[species]();
     Object.assign(this, P);
     this.species = species;
     this.anim = 'idle';
@@ -338,11 +405,12 @@ export class Critter {
 
 // A small picture of an animal's face for cards and lists.
 const portraits = {};
-export function portrait(renderer, species) {
-  if (portraits[species]) return portraits[species];
+export function portrait(renderer, species, look) {
+  const key = species + (look ? JSON.stringify(look) : '');
+  if (portraits[key]) return portraits[key];
   const size = 192;
   const scene = new THREE.Scene();
-  const c = new Critter(species);
+  const c = new Critter(species, look);
   c.update(0.016, 0); c.update(0.016, 0.1);
   for (const e of c.eyes) e.scale.y = 1;
   c.head.rotation.set(0, 0, 0);
@@ -380,5 +448,5 @@ export function portrait(renderer, species) {
     img.data[o + 3] = px[s + 3];
   }
   ctx.putImageData(img, 0, 0);
-  return (portraits[species] = canvas.toDataURL());
+  return (portraits[key] = canvas.toDataURL());
 }
